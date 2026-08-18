@@ -39,6 +39,10 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _publish_progress(message: str) -> None:
+    print(f"[plan-gh-backlog] {message}", file=sys.stderr, flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -65,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             create_repo=args.create_repo,
             visibility=args.visibility,
             report_path=args.report,
+            progress=_publish_progress if args.apply else None,
         )
         mode = "Applied" if args.apply else "Dry run"
         print(f"{mode}: {args.repo}")

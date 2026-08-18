@@ -55,6 +55,7 @@ class GitHubClient:
         clock: Callable[[], float] = time.time,
         max_retries: int = 5,
         api_url: str = "https://api.github.com",
+        progress: Callable[[str], None] | None = None,
     ) -> None:
         self._token = token or auth_token()
         self._transport = transport or UrllibTransport()
@@ -62,6 +63,7 @@ class GitHubClient:
         self._clock = clock
         self._max_retries = max_retries
         self._api_url = api_url.rstrip("/")
+        self._progress = progress
 
     def request(self, method: str, path: str, payload: dict | None = None) -> object:
         url = path if path.startswith("http") else self._api_url + path
@@ -75,12 +77,22 @@ class GitHubClient:
         if body is not None:
             headers["Content-Type"] = "application/json"
         for attempt in range(self._max_retries + 1):
-            response = self._transport(url, method, headers, body)
+            try:
+                response = self._transport(url, method, headers, body)
+            except (urllib.error.URLError, TimeoutError) as error:
+                if attempt < self._max_retries:
+                    delay = min(2.0**attempt, 60.0)
+                    self._emit_retry(method, url, attempt, f"network error: {error}", delay)
+                    self._sleep(delay)
+                    continue
+                raise GitHubError(f"GitHub API {method} {urllib.parse.urlsplit(url).path} failed: {error}") from error
             text = response.body.decode("utf-8", errors="replace")
             if 200 <= response.status < 300:
                 return json.loads(text) if text else None
             if attempt < self._max_retries and self._retryable(response, text):
-                self._sleep(self._delay(response, attempt))
+                delay = self._delay(response, attempt)
+                self._emit_retry(method, url, attempt, f"HTTP {response.status}", delay)
+                self._sleep(delay)
                 continue
             message = text
             try:
@@ -110,15 +122,34 @@ class GitHubClient:
             "User-Agent": "plan-gh-backlog/1",
         }
         for attempt in range(self._max_retries + 1):
-            response = self._transport(url, "GET", headers, None)
+            try:
+                response = self._transport(url, "GET", headers, None)
+            except (urllib.error.URLError, TimeoutError) as error:
+                if attempt < self._max_retries:
+                    delay = min(2.0**attempt, 60.0)
+                    self._emit_retry("GET", url, attempt, f"network error: {error}", delay)
+                    self._sleep(delay)
+                    continue
+                raise GitHubError(f"GitHub API GET {urllib.parse.urlsplit(url).path} failed: {error}") from error
             text = response.body.decode("utf-8", errors="replace")
             if 200 <= response.status < 300:
                 return (json.loads(text) if text else None), response.headers
             if attempt < self._max_retries and self._retryable(response, text):
-                self._sleep(self._delay(response, attempt))
+                delay = self._delay(response, attempt)
+                self._emit_retry("GET", url, attempt, f"HTTP {response.status}", delay)
+                self._sleep(delay)
                 continue
             raise GitHubError(f"GitHub API GET {urllib.parse.urlsplit(url).path} returned {response.status}: {text}")
         raise AssertionError("retry loop exhausted")
+
+    def _emit_retry(self, method: str, url: str, attempt: int, reason: str, delay: float) -> None:
+        if self._progress is None:
+            return
+        path = urllib.parse.urlsplit(url).path
+        self._progress(
+            f"attempt {attempt + 1}/{self._max_retries + 1}: {method} {path} {reason}; "
+            f"retrying in {delay:g}s"
+        )
 
     @staticmethod
     def _retryable(response: Response, text: str) -> bool:

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -123,6 +124,40 @@ class GitHubClientTests(unittest.TestCase):
         self.assertEqual(client.request("GET", "/ok"), {"ok": True})
         self.assertEqual(sleeps, [3.0])
 
+    def test_request_retries_network_timeout(self) -> None:
+        responses: list[Response | Exception] = [
+            urllib.error.URLError("timed out"),
+            Response(200, {}, b'{"ok":true}'),
+        ]
+        sleeps: list[float] = []
+
+        def transport(*_args) -> Response:
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        client = GitHubClient("secret", transport=transport, sleeper=sleeps.append)
+        self.assertEqual(client.request("POST", "/ok", {"x": 1}), {"ok": True})
+        self.assertEqual(sleeps, [1.0])
+
+    def test_pagination_retries_network_timeout(self) -> None:
+        responses: list[Response | Exception] = [
+            urllib.error.URLError("timed out"),
+            Response(200, {}, b'[{"id":1}]'),
+        ]
+        sleeps: list[float] = []
+
+        def transport(*_args) -> Response:
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        client = GitHubClient("secret", transport=transport, sleeper=sleeps.append)
+        self.assertEqual(client.paginate("/items"), [{"id": 1}])
+        self.assertEqual(sleeps, [1.0])
+
 
 class BombClient:
     def __getattr__(self, name: str):
@@ -217,6 +252,7 @@ class PublisherTests(unittest.TestCase):
             persisted = json.loads(report_path.read_text())
         self.assertEqual(len(fake.issues), 7)
         self.assertEqual(len(fake.mutations), mutation_count)
+        self.assertNotIn("due_on", fake.milestones[0])
         self.assertEqual(first["summary"]["created"], 12)  # 4 labels + 1 milestone + 7 issues
         self.assertEqual(second["summary"]["updated"], 0)
         self.assertEqual(second["summary"]["skipped"], 12)

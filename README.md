@@ -148,7 +148,7 @@ plan-gh-backlog publish BACKLOG.md --repo acme/service --apply
 
 `plan` finishes lower waves first, then forms deterministic dependency-ready batches capped at `--max-parallel` (1–64). Tasks sharing a conflict group or overlapping owned path roots are separated. `area` and `owner` remain visible scheduling metadata.
 
-GitHub publication itself is deliberately serialized and rate-safe. This CLI does **not** start or coordinate implementation agents.
+GitHub publication itself is deliberately serialized and rate-safe. Apply mode streams flushed phase/resource progress and bounded retry notices to stderr while keeping tokens, payloads, and managed bodies out of logs. This CLI does **not** start or coordinate implementation agents.
 
 ## Architecture
 
@@ -175,7 +175,7 @@ The implementation uses only the Python standard library. Markdown is never eval
 - Duplicate/conflicting remote markers and malformed managed blocks stop apply before backlog mutations.
 - Only the delimited managed block is replaced; user body content outside it is preserved.
 - Existing labels on managed issues are reconciled to the schema because they are managed fields.
-- Pagination, primary/secondary rate limits, 429s, and transient 5xx responses have bounded retries/backoff.
+- Pagination, network timeouts, primary/secondary rate limits, 429s, and transient 5xx responses have bounded retries/backoff with sanitized progress logs.
 - Operations are deterministic and serialized for safe partial reruns.
 - Issues are never closed or deleted. There is no implicit pruning.
 - The JSON report is atomically updated and contains IDs, issue numbers/URLs, statuses, and native sub-issue results—never credentials.

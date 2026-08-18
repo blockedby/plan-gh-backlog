@@ -19,7 +19,7 @@ From this skill directory, run:
 ./scripts/plan-gh-backlog publish BACKLOG.md --repo OWNER/REPO --apply
 ```
 
-Treat `publish` as offline/read-only unless the user explicitly authorizes `--apply`. Do not add `--create-repo` without explicit repository-creation and visibility authorization. Publication is serialized; plan batches describe implementation dispatch only and do not execute agents.
+Treat `publish` as offline/read-only unless the user explicitly authorizes `--apply`. Do not add `--create-repo` without explicit repository-creation and visibility authorization. Publication is serialized; `--apply` streams phase, item-count, status, and bounded-retry progress to stderr without logging tokens or issue bodies. Plan batches describe implementation dispatch only and do not execute agents.
 
 Use stable IDs permanently. Never copy or edit managed markers. On remote marker conflicts, stop rather than repair destructively. Never close, delete, or prune issues as part of this skill.
 

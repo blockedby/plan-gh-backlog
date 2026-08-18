@@ -6,6 +6,7 @@ import re
 import tempfile
 import urllib.parse
 from pathlib import Path
+from typing import Callable
 
 from .github import GitHubClient, GitHubError
 from .managed import ManagedContentError, managed_block, marker_ids, replace_managed
@@ -126,6 +127,7 @@ def publish(
     visibility: str | None = None,
     report_path: str | Path = ".plan-gh-backlog-report.json",
     client: GitHubClient | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict:
     validate(backlog)
     if not _REPO_RE.match(repo):
@@ -148,6 +150,11 @@ def publish(
         "summary": {},
     }
     resources: list[dict] = report["resources"]  # type: ignore[assignment]
+
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(message)
+
     if not apply:
         for label in sorted(backlog.labels, key=lambda item: item.name):
             resources.append(_record("label", label.name, label.name, "planned"))
@@ -160,12 +167,15 @@ def publish(
         _write_report(report_path, report)
         return report
 
-    github = client or GitHubClient()
+    github = client or GitHubClient(progress=progress)
     try:
+        emit(f"repository: verifying {repo}")
         repository = _ensure_repository(github, repo, create_repo, visibility)
         report["repository_url"] = repository.get("html_url")
+        emit(f"repository: ready {report['repository_url'] or repo}")
 
         # Read and validate all stable remote markers before the first backlog mutation.
+        emit("preflight: loading remote issues and milestones")
         remote_issues = [item for item in github.paginate(f"/repos/{repo}/issues?state=all") if "pull_request" not in item]
         remote_milestones = github.paginate(f"/repos/{repo}/milestones?state=all")
         issues_by_id = _remote_by_marker(remote_issues, "body", "issue")
@@ -182,9 +192,15 @@ def publish(
                 "managed marker is attached to the wrong resource type: "
                 f"issues={wrong_issue_ids}, milestones={wrong_milestone_ids}"
             )
+        emit(
+            f"preflight: {len(remote_issues)} issues, {len(remote_milestones)} milestones, "
+            f"{len(issues_by_id)} managed issue markers"
+        )
 
         remote_labels = {item["name"].casefold(): item for item in github.paginate(f"/repos/{repo}/labels")}
-        for label in sorted(backlog.labels, key=lambda item: item.name):
+        sorted_labels = sorted(backlog.labels, key=lambda item: item.name)
+        emit(f"labels: reconciling {len(sorted_labels)}")
+        for index, label in enumerate(sorted_labels, start=1):
             desired = {"name": label.name, "color": label.color, "description": label.description}
             existing = remote_labels.get(label.name.casefold())
             if not existing:
@@ -197,16 +213,21 @@ def publish(
                 updated = github.request("PATCH", f"/repos/{repo}/labels/{encoded}", desired)
                 resources.append(_record("label", label.name, label.name, "updated", url=updated.get("url")))
             _write_report(report_path, report)
+            emit(f"labels {index}/{len(sorted_labels)}: {label.name} {resources[-1]['status']}")
 
         milestone_numbers: dict[str, int] = {}
-        for milestone in sorted(backlog.milestones, key=lambda item: item.id):
+        sorted_milestones = sorted(backlog.milestones, key=lambda item: item.id)
+        emit(f"milestones: reconciling {len(sorted_milestones)}")
+        for index, milestone in enumerate(sorted_milestones, start=1):
             existing = milestones_by_id.get(milestone.id)
             description = replace_managed(existing.get("description") if existing else None, milestone.id, _milestone_content(milestone))
+            due_on = f"{milestone.due}T23:59:59Z" if milestone.due else None
             desired = {
                 "title": milestone.title,
                 "description": description,
-                "due_on": f"{milestone.due}T23:59:59Z" if milestone.due else None,
             }
+            if due_on is not None:
+                desired["due_on"] = due_on
             if not existing:
                 result = github.request("POST", f"/repos/{repo}/milestones", desired)
                 status = "created"
@@ -214,7 +235,7 @@ def publish(
                 same = (
                     existing.get("title") == desired["title"]
                     and (existing.get("description") or "") == description
-                    and (existing.get("due_on") or None) == desired["due_on"]
+                    and (existing.get("due_on") or None) == due_on
                 )
                 if same:
                     result, status = existing, "skipped"
@@ -224,19 +245,22 @@ def publish(
             milestone_numbers[milestone.id] = result["number"]
             resources.append(_record("milestone", milestone.id, milestone.title, status, number=result["number"], url=result.get("html_url")))
             _write_report(report_path, report)
+            emit(f"milestones {index}/{len(sorted_milestones)}: {milestone.id} {status}")
 
         # First pass ensures every managed issue has a stable issue number.
         numbers: dict[str, int] = {}
         urls: dict[str, str] = {}
         created_ids: set[str] = set()
         all_items = sorted((*backlog.epics, *backlog.tasks), key=lambda item: item.id)
-        for item in all_items:
+        emit(f"issues: resolving stable numbers for {len(all_items)}")
+        for index, item in enumerate(all_items, start=1):
             existing = issues_by_id.get(item.id)
             if existing:
                 numbers[item.id] = existing["number"]
                 urls[item.id] = existing["html_url"]
                 report["issues"][item.id] = {"number": numbers[item.id], "url": urls[item.id], "status": "discovered"}  # type: ignore[index]
                 _write_report(report_path, report)
+                emit(f"issues resolve {index}/{len(all_items)}: {item.id} discovered #{numbers[item.id]}")
                 continue
             placeholder = managed_block(item.id, f"{item.body}\n\nPublication is resolving managed links.")
             created = github.request("POST", f"/repos/{repo}/issues", {
@@ -251,9 +275,11 @@ def publish(
             created_ids.add(item.id)
             report["issues"][item.id] = {"number": numbers[item.id], "url": urls[item.id], "status": "created-pending-links"}  # type: ignore[index]
             _write_report(report_path, report)
+            emit(f"issues resolve {index}/{len(all_items)}: {item.id} created #{numbers[item.id]}")
 
         tasks = {task.id: task for task in backlog.tasks}
-        for item in all_items:
+        emit(f"issues: reconciling managed fields for {len(all_items)}")
+        for index, item in enumerate(all_items, start=1):
             existing = issues_by_id[item.id]
             body = replace_managed(existing.get("body"), item.id, _issue_content(item, numbers, tasks))
             desired_labels = sorted(item.labels)
@@ -279,11 +305,16 @@ def publish(
             resources.append(entry)
             report["issues"][item.id] = {"number": numbers[item.id], "url": urls[item.id], "status": status}  # type: ignore[index]
             _write_report(report_path, report)
+            emit(f"issues reconcile {index}/{len(all_items)}: {item.id} {status} #{numbers[item.id]}")
 
+        subissue_total = sum(len(epic.checklist) for epic in backlog.epics)
+        subissue_index = 0
+        emit(f"sub-issues: reconciling {subissue_total}")
         for epic in sorted(backlog.epics, key=lambda item: item.id):
             endpoint = f"/repos/{repo}/issues/{numbers[epic.id]}/sub_issues"
             existing_children = {item["number"] for item in github.paginate(endpoint)}
             for check in epic.checklist:
+                subissue_index += 1
                 child_number = numbers[check.id]
                 if child_number in existing_children:
                     status = "skipped"
@@ -298,12 +329,21 @@ def publish(
                     "status": status,
                 })
                 _write_report(report_path, report)
+                emit(
+                    f"sub-issues {subissue_index}/{subissue_total}: "
+                    f"{epic.id} -> {check.id} {status}"
+                )
 
         counts = {status: sum(1 for item in resources if item["status"] == status) for status in ("created", "updated", "skipped")}
         report["summary"] = {"planned": 0, **counts}
         _write_report(report_path, report)
+        emit(
+            "complete: "
+            f"created={counts['created']} updated={counts['updated']} skipped={counts['skipped']}"
+        )
         return report
     except Exception as error:
         report["error"] = str(error)
         _write_report(report_path, report)
+        emit(f"failed: {error}")
         raise
