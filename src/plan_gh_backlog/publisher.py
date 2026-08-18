@@ -226,9 +226,9 @@ def publish(
                 "title": milestone.title,
                 "description": description,
             }
-            if due_on is not None:
-                desired["due_on"] = due_on
             if not existing:
+                if due_on is not None:
+                    desired["due_on"] = due_on
                 result = github.request("POST", f"/repos/{repo}/milestones", desired)
                 status = "created"
             else:
@@ -240,7 +240,11 @@ def publish(
                 if same:
                     result, status = existing, "skipped"
                 else:
-                    result = github.request("PATCH", f"/repos/{repo}/milestones/{existing['number']}", desired)
+                    result = github.request(
+                        "PATCH",
+                        f"/repos/{repo}/milestones/{existing['number']}",
+                        {**desired, "due_on": due_on},
+                    )
                     status = "updated"
             milestone_numbers[milestone.id] = result["number"]
             resources.append(_record("milestone", milestone.id, milestone.title, status, number=result["number"], url=result.get("html_url")))
