@@ -261,6 +261,31 @@ class PublisherTests(unittest.TestCase):
         task_body = next(item["body"] for item in fake.issues if marker_ids(item["body"]) == ["E-01.2"])
         self.assertRegex(task_body, r"#\d+ — `E-01.1`")
 
+    def test_due_none_clears_an_existing_date_once(self) -> None:
+        fake = FakeGitHub()
+        backlog = parse_text(VALID)
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            publish(backlog, "acme/demo", apply=True, report_path=report_path, client=fake)
+            fake.milestones[0]["due_on"] = "2030-01-01T23:59:59Z"
+
+            publish(backlog, "acme/demo", apply=True, report_path=report_path, client=fake)
+            milestone_patches = [
+                mutation
+                for mutation in fake.mutations
+                if mutation[0] == "PATCH" and "/milestones/" in mutation[1]
+            ]
+            self.assertIsNone(fake.milestones[0]["due_on"])
+            self.assertEqual(len(milestone_patches), 1)
+
+            publish(backlog, "acme/demo", apply=True, report_path=report_path, client=fake)
+            rerun_milestone_patches = [
+                mutation
+                for mutation in fake.mutations
+                if mutation[0] == "PATCH" and "/milestones/" in mutation[1]
+            ]
+        self.assertEqual(rerun_milestone_patches, milestone_patches)
+
     def test_duplicate_remote_marker_stops_before_mutation(self) -> None:
         fake = FakeGitHub()
         body = managed_block("E-01", "x")
