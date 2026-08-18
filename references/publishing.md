@@ -62,7 +62,21 @@ Existing user labels on managed issues are replaced by the schema's label set be
 
 Every operation is deterministic and serialized. A report is atomically rewritten as progress is made, so failures leave useful state. Rerun the same command after correcting a transient error. Existing markers prevent duplicate issues.
 
-The client follows REST pagination and retries primary/secondary rate limits, HTTP 429, and transient 5xx responses with bounded delay. It does not parallelize publication.
+The client follows REST pagination and retries network timeouts, primary/secondary rate limits, HTTP 429, and transient 5xx responses with bounded delay. It does not parallelize publication.
+
+## Progress logging
+
+`publish --apply` writes flushed progress lines to stderr while reserving stdout for the final machine-readable summary. Logs identify the current phase, resource count, stable backlog ID, outcome, and retry delay. They never include authorization headers, tokens, issue bodies, milestone descriptions, or request payloads.
+
+Typical lines:
+
+```text
+[plan-gh-backlog] issues resolve 8/65: E-F1.1 discovered #8
+[plan-gh-backlog] attempt 1/6: POST /repos/acme/jobber/issues network error: timed out; retrying in 1s
+[plan-gh-backlog] sub-issues 55/55: E-F9 -> E-F9.6 created
+```
+
+Library callers can pass a `progress: Callable[[str], None]` callback to `publish()` or `GitHubClient`; no progress is emitted when the callback is omitted. Offline dry-run remains quiet and network-free.
 
 ## Report
 
